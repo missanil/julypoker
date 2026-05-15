@@ -46,6 +46,18 @@ button { touch-action: manipulation; }
   line-height: 1.1;
 }
 
+.topbar-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.topbar-title h1,
+.topbar-title .eyebrow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .eyebrow {
   color: var(--muted);
   font-size: 12px;
@@ -99,7 +111,7 @@ button { touch-action: manipulation; }
   grid-template-columns: repeat(3, 1fr);
 }
 
-.chip, .score-btn, .segmented button, .secondary, .icon-button, .utility-button, .mini-button {
+.chip, .segmented button, .secondary, .icon-button, .utility-button, .mini-button {
   min-height: 46px;
   border: 1px solid var(--line);
   color: var(--text);
@@ -323,7 +335,7 @@ input {
   font-weight: 800;
 }
 
-.segmented button.active, .score-btn.active {
+.segmented button.active {
   background: linear-gradient(180deg, var(--gold), var(--gold-dark));
   color: #1b1200;
 }
@@ -413,18 +425,28 @@ input {
   gap: 4px;
 }
 
+.finished-panel {
+  border-color: rgba(246, 191, 50, 0.45);
+  background: linear-gradient(180deg, rgba(246, 191, 50, 0.16), rgba(9, 70, 51, 0.86));
+}
+
+.finished-panel h2 {
+  margin-bottom: 8px;
+  color: #ffe08b;
+}
+
+.finished-panel p {
+  margin: 0 0 14px;
+  color: #d8ffe9;
+  line-height: 1.45;
+}
+
 .field-label {
   display: block;
   margin: 14px 0 8px;
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
-}
-
-.score-buttons {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
 }
 
 .score-stepper {
@@ -703,7 +725,6 @@ input {
   font-size: 12px;
   margin: 10px 2px 0;
 }
-.score-buttons { display: none; }
 .score-stepper.numeric-only {
   grid-template-columns: 72px 1fr 72px;
   margin-bottom: 4px;
