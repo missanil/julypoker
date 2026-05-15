@@ -22,6 +22,7 @@ v2:
 - Allows EN/CN switching during setup, active play, and the finished game screen.
 - Uses the native share sheet for recap images when supported, with download fallback.
 - Updates recap images to a 1080x1920 mobile poster with full leaderboard and expanded playful analysis templates.
+- Adds opponent-side takeover and pressure-point stats to the recap poster.
 - Refreshes the service worker cache version for PWA updates.
 
 Local test:
