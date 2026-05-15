@@ -805,6 +805,7 @@ function buildHistoryAnalysis() {
     dealerWins: 0,
     friendWins: 0,
     takeoverWins: 0,
+    opponentPoints: 0,
   }));
   const byId = new Map(stats.map((item) => [item.playerId, item]));
 
@@ -829,6 +830,11 @@ function buildHistoryAnalysis() {
       if (!playerStat) return;
       playerStat.gains += Math.max(0, getLevelRank(change.after) - getLevelRank(change.before));
     });
+    game.seatingOrder.forEach((id) => {
+      if (id === round.dealerId || round.partnerIds.includes(id)) return;
+      const opponentStat = byId.get(id);
+      if (opponentStat) opponentStat.opponentPoints += round.opponentScore;
+    });
   });
 
   stats.sort((a, b) =>
@@ -842,6 +848,7 @@ function buildHistoryAnalysis() {
   const closer = [...stats].sort((a, b) => b.dealerWins - a.dealerWins || b.levelRank - a.levelRank)[0];
   const bestFriend = [...stats].sort((a, b) => b.friendWins - a.friendWins || b.gains - a.gains)[0];
   const takeoverArtist = [...stats].sort((a, b) => b.takeoverWins - a.takeoverWins || b.gains - a.gains)[0];
+  const pressureArtist = [...stats].sort((a, b) => b.opponentPoints - a.opponentPoints || b.takeoverWins - a.takeoverWins || b.levelRank - a.levelRank)[0];
   const totalRounds = game.history.length;
   const topChanges = stats.filter((item) => item.gains > 0).slice(0, 4);
 
@@ -866,6 +873,7 @@ function buildHistoryAnalysis() {
     closer,
     bestFriend,
     takeoverArtist,
+    pressureArtist,
     topChanges,
     joke: jokes[Math.abs(mvp.name.length + totalRounds + mvp.levelRank) % jokes.length],
     leaderboard: stats,
@@ -912,15 +920,15 @@ function drawRoundRect(ctx, x, y, width, height, radius) {
 }
 
 function drawStatPill(ctx, label, value, x, y, width) {
-  drawRoundRect(ctx, x, y, width, 104, 20);
+  drawRoundRect(ctx, x, y, width, 92, 18);
   ctx.fillStyle = "rgba(255,255,255,0.11)";
   ctx.fill();
   ctx.fillStyle = "#a9c9bd";
   ctx.font = "23px system-ui, sans-serif";
-  ctx.fillText(label, x + 20, y + 34);
+  ctx.fillText(label, x + 20, y + 31);
   ctx.fillStyle = "#f6bf32";
   ctx.font = "900 44px system-ui, sans-serif";
-  ctx.fillText(value, x + 20, y + 86);
+  ctx.fillText(value, x + 20, y + 76);
 }
 
 function pickRecapLine(lines, seed) {
@@ -1009,17 +1017,17 @@ async function exportHistoryImage() {
   ctx.arc(100, 1710, 260, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#f4fff9";
-  ctx.font = "900 58px system-ui, sans-serif";
-  ctx.fillText(copy("Poker Night Recap", "找朋友战报"), 72, 110);
+  ctx.fillStyle = "#f6bf32";
+  ctx.font = "900 72px system-ui, sans-serif";
+  ctx.fillText(copy("Poker Night Recap", "找朋友战报"), 72, 124);
   ctx.fillStyle = "#a9c9bd";
-  ctx.font = "26px system-ui, sans-serif";
+  ctx.font = "30px system-ui, sans-serif";
   ctx.fillText(copy(
     `${analysis.totalRounds} rounds · ${game.deckCount} decks · Match Recap · ${recapDate}`,
     `${analysis.totalRounds} 局 · ${game.deckCount} 副牌 · 本场战报 · ${recapDate}`
-  ), 74, 154);
+  ), 74, 176);
 
-  drawRoundRect(ctx, 64, 208, 952, 340, 34);
+  drawRoundRect(ctx, 64, 232, 952, 310, 34);
   ctx.fillStyle = "rgba(255,255,255,0.09)";
   ctx.fill();
   ctx.strokeStyle = "rgba(246,191,50,0.42)";
@@ -1028,30 +1036,30 @@ async function exportHistoryImage() {
 
   ctx.fillStyle = "#f6bf32";
   ctx.font = "800 30px system-ui, sans-serif";
-  ctx.fillText(copy("Tonight's MVP", "今晚 MVP"), 104, 268);
+  ctx.fillText(copy("Tonight's MVP", "今晚 MVP"), 104, 290);
   ctx.fillStyle = "#ffffff";
   ctx.font = "900 70px system-ui, sans-serif";
-  ctx.fillText(analysis.mvp.name, 104, 358, 820);
+  ctx.fillText(analysis.mvp.name, 104, 374, 820);
   ctx.fillStyle = "#d8ffe9";
   ctx.font = "31px system-ui, sans-serif";
-  ctx.fillText(copy(`Current level: ${analysis.mvp.level} · Total rounds: ${analysis.totalRounds}`, `当前级牌：${analysis.mvp.level} · 总局数：${analysis.totalRounds}`), 106, 418);
+  ctx.fillText(copy(`Current level: ${analysis.mvp.level} · Total rounds: ${analysis.totalRounds}`, `当前级牌：${analysis.mvp.level} · 总局数：${analysis.totalRounds}`), 106, 426);
   ctx.fillStyle = "#f4fff9";
   ctx.font = "29px system-ui, sans-serif";
-  wrapCanvasText(ctx, analysis.joke, 104, 462, 850, 42, 2);
+  wrapCanvasText(ctx, analysis.joke, 104, 468, 850, 36, 2);
 
-  drawStatPill(ctx, copy("Dealer wins", "庄家胜场"), String(analysis.closer.dealerWins), 64, 590, 292);
-  drawStatPill(ctx, copy("Friend wins", "朋友助攻"), String(analysis.bestFriend.friendWins), 394, 590, 292);
-  drawStatPill(ctx, copy("Takeover heat", "上台热度"), String(analysis.takeoverArtist.takeoverWins), 724, 590, 292);
+  drawStatPill(ctx, copy("Dealer wins", "庄家胜场"), String(analysis.closer.dealerWins), 64, 570, 292);
+  drawStatPill(ctx, copy("Friend wins", "朋友助攻"), String(analysis.bestFriend.friendWins), 394, 570, 292);
+  drawStatPill(ctx, copy("Takeover heat", "上台热度"), String(analysis.takeoverArtist.takeoverWins), 724, 570, 292);
 
-  drawRoundRect(ctx, 64, 746, 952, 530, 30);
+  drawRoundRect(ctx, 64, 704, 952, 480, 30);
   ctx.fillStyle = "rgba(3, 31, 24, 0.74)";
   ctx.fill();
   ctx.fillStyle = "#f6bf32";
   ctx.font = "800 36px system-ui, sans-serif";
-  ctx.fillText(copy("Leaderboard", "排行榜"), 104, 808);
+  ctx.fillText(copy("Leaderboard", "排行榜"), 104, 764);
 
-  const rowStart = 866;
-  const rowHeight = Math.min(48, Math.max(35, 372 / Math.max(analysis.leaderboard.length, 1)));
+  const rowStart = 820;
+  const rowHeight = Math.min(44, Math.max(33, 326 / Math.max(analysis.leaderboard.length, 1)));
   const nameFontSize = rowHeight < 42 ? 22 : 29;
   const detailFontSize = rowHeight < 42 ? 18 : 23;
   analysis.leaderboard.forEach((player, index) => {
@@ -1082,20 +1090,20 @@ async function exportHistoryImage() {
     ctx.fillStyle = "#a9c9bd";
     ctx.font = `${detailFontSize}px system-ui, sans-serif`;
     ctx.fillText(copy(
-      `Level ${player.level} · +${player.gains} · dealer ${player.dealerWins} · friend ${player.friendWins}`,
-      `级牌 ${player.level} · +${player.gains} · 庄家 ${player.dealerWins} · 朋友 ${player.friendWins}`
+      `Lv ${player.level} · D${player.dealerWins} · F${player.friendWins} · T${player.takeoverWins}`,
+      `级牌 ${player.level} · 庄家 ${player.dealerWins} · 朋友 ${player.friendWins} · 上台 ${player.takeoverWins}`
     ), 500, y, 470);
   });
 
-  drawRoundRect(ctx, 64, 1308, 952, 430, 30);
+  drawRoundRect(ctx, 64, 1220, 952, 550, 30);
   ctx.fillStyle = "rgba(3, 31, 24, 0.60)";
   ctx.fill();
   ctx.fillStyle = "#f6bf32";
   ctx.font = "800 36px system-ui, sans-serif";
-  ctx.fillText(copy("Table Gossip", "牌桌小作文"), 104, 1368);
+  ctx.fillText(copy("Table Gossip", "牌桌小作文"), 104, 1278);
   ctx.fillStyle = "#d8ffe9";
   ctx.font = "33px system-ui, sans-serif";
-  let gossipY = 1430;
+  let gossipY = 1338;
   const closerLines = [
     copy(`${analysis.closer.name} held the dealer seat like it came with a tiny throne.`, `${analysis.closer.name} 坐庄像坐小王座，稳得很有统治欲。`),
     copy(`${analysis.closer.name} guarded the dealer seat with calm hands and very selective generosity.`, `${analysis.closer.name} 守庄守得手很稳，慷慨程度则相当挑人。`),
@@ -1136,12 +1144,23 @@ async function exportHistoryImage() {
     copy("No one really weaponized the takeover lane tonight, and the scoreboard looked relieved.", "今晚没人认真武器化上台路线，计分板看起来松了口气。"),
     copy("The takeover plot remained quiet, possibly waiting for a sequel.", "上台剧情保持安静，可能是在等续集。"),
   ];
+  const pressureLines = [
+    copy(`${analysis.pressureArtist.name} collected ${analysis.pressureArtist.opponentPoints} opponent-side points, a steady little tax on dealer comfort.`, `${analysis.pressureArtist.name} 在对手方累计拿到 ${analysis.pressureArtist.opponentPoints} 分，稳定给庄家舒适区收税。`),
+    copy(`${analysis.pressureArtist.name} stacked up ${analysis.pressureArtist.opponentPoints} pressure points from across the table. Quietly rude.`, `${analysis.pressureArtist.name} 在对面攒了 ${analysis.pressureArtist.opponentPoints} 分压力值，安静但很冒犯。`),
+    copy(`${analysis.pressureArtist.name} did not always take over, but ${analysis.pressureArtist.opponentPoints} opponent points kept the room alert.`, `${analysis.pressureArtist.name} 不一定每次上台，但 ${analysis.pressureArtist.opponentPoints} 对手分足够让全桌坐直。`),
+    copy(`${analysis.pressureArtist.name} put ${analysis.pressureArtist.opponentPoints} points into the dealer-side stress account.`, `${analysis.pressureArtist.name} 往庄家方压力账户里存了 ${analysis.pressureArtist.opponentPoints} 分。`),
+    copy(`${analysis.pressureArtist.name} built ${analysis.pressureArtist.opponentPoints} opponent points like a slow elevator with suspicious music.`, `${analysis.pressureArtist.name} 把对手分慢慢堆到 ${analysis.pressureArtist.opponentPoints}，像一部配乐可疑的电梯。`),
+    copy(`${analysis.pressureArtist.name} brought ${analysis.pressureArtist.opponentPoints} points of background pressure, the kind that makes dealers count twice.`, `${analysis.pressureArtist.name} 带来 ${analysis.pressureArtist.opponentPoints} 分背景压力，属于让庄家忍不住多算一遍的那种。`),
+    copy(`${analysis.pressureArtist.name} made ${analysis.pressureArtist.opponentPoints} opponent points feel less like scoring and more like persistent weather.`, `${analysis.pressureArtist.name} 把 ${analysis.pressureArtist.opponentPoints} 对手分打得不像得分，更像持续性天气。`),
+    copy(`${analysis.pressureArtist.name} kept tapping the dealer side for ${analysis.pressureArtist.opponentPoints} total points. Annoying, but well documented.`, `${analysis.pressureArtist.name} 对庄家方持续敲出 ${analysis.pressureArtist.opponentPoints} 分，烦人，但证据充分。`),
+  ];
   const gossip = [
     pickRecapLine(closerLines, analysis.closer.name.length + analysis.totalRounds + analysis.closer.dealerWins),
     pickRecapLine(friendLines, analysis.bestFriend.name.length + analysis.bestFriend.friendWins + analysis.mvp.gains),
     analysis.takeoverArtist.takeoverWins
       ? pickRecapLine(takeoverLines, analysis.takeoverArtist.name.length + analysis.takeoverArtist.takeoverWins + analysis.totalRounds)
       : pickRecapLine(noTakeoverLines, analysis.totalRounds + analysis.mvp.levelRank),
+    pickRecapLine(pressureLines, analysis.pressureArtist.name.length + analysis.pressureArtist.opponentPoints + analysis.totalRounds),
   ];
   gossip.forEach((line) => {
     ctx.fillStyle = "#f6bf32";
@@ -1149,7 +1168,7 @@ async function exportHistoryImage() {
     ctx.arc(114, gossipY - 11, 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "#d8ffe9";
-    gossipY = wrapCanvasText(ctx, line, 136, gossipY, 800, 40, 2) + 12;
+    gossipY = wrapCanvasText(ctx, line, 136, gossipY, 800, 38, 2) + 8;
   });
 
   ctx.fillStyle = "#a9c9bd";
