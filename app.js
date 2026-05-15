@@ -57,13 +57,6 @@ function copy(en, zh) {
   return isZh() ? zh : en;
 }
 
-function formatText(template, values = {}) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, value),
-    template
-  );
-}
-
 function createDefaultState() {
   const profiles = DEFAULT_PLAYER_NAMES.map((name, index) => ({
     id: `p-${index + 1}`,
@@ -113,7 +106,7 @@ function normalizeState(parsed) {
   });
 
   const normalizedGame = incoming.game
-    ? { ...incoming.game, undoStack: incoming.game.undoStack || [] }
+    ? { ...incoming.game, undoStack: incoming.game.undoStack || [], finished: incoming.game.finished || null }
     : incoming.game;
 
   return {
@@ -137,7 +130,11 @@ function loadState() {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Keep the app usable if storage is unavailable or full.
+  }
 }
 
 function render() {
@@ -237,6 +234,7 @@ function createGame() {
     })),
     history: [],
     undoStack: [],
+    finished: null,
   };
   state.pending = { ...state.pending, firstDealerId: "", partnerIds: [], opponentScore: 0 };
   state.lastResult = null;
@@ -359,6 +357,15 @@ function markRequiredCompletion(dealerLevel, dealerSideIds) {
   });
 }
 
+function createGameFinishedState(roundRecord, winnerIds) {
+  return {
+    completedLevel: "A",
+    winnerIds: [...winnerIds],
+    roundNumber: roundRecord.roundNumber,
+    createdAt: Date.now(),
+  };
+}
+
 function findNextDealer(currentDealerId, dealerSideIds) {
   const order = state.game.seatingOrder;
   const currentIndex = order.indexOf(currentDealerId);
@@ -398,6 +405,11 @@ function formatRoundResult(round) {
 
 function submitRound() {
   const game = state.game;
+  if (game.finished) {
+    alert(copy("This game is already finished. Export the recap or reset to start again.", "本局已经结束。可以导出战报，或重置后重新开始。"));
+    return;
+  }
+
   const partnerCount = getRequiredPartnerCount(game.seatingOrder.length);
   const dealerId = game.currentDealerId || state.pending.firstDealerId;
   const partnerIds = state.pending.partnerIds;
@@ -443,6 +455,7 @@ function submitRound() {
   let resultAdvanceSteps = 0;
 
   const opponentSideIds = game.seatingOrder.filter((id) => !dealerSideIds.includes(id));
+  let finishedWinnerIds = [];
 
   if (opponentScore >= takeoverScore) {
     const advanceSteps = Math.floor((opponentScore - takeoverScore) / 60);
@@ -469,6 +482,9 @@ function submitRound() {
     // extra level compared with partners. If the dealer side wins on 10 / K / A,
     // both dealer and friends complete that required level.
     markRequiredCompletion(dealerLevel, dealerSideIds);
+    if (dealerLevel === "A") {
+      finishedWinnerIds = [...dealerSideIds];
+    }
 
     dealerSideIds.forEach((id) => {
       const player = getPlayerState(id);
@@ -499,11 +515,21 @@ function submitRound() {
   game.history.unshift(roundRecord);
   game.currentDealerId = nextDealerId;
   game.roundNumber += 1;
+  if (finishedWinnerIds.length) {
+    game.finished = createGameFinishedState(roundRecord, finishedWinnerIds);
+  }
   state.pending.partnerIds = [];
   state.pending.firstDealerId = "";
   state.pending.opponentScore = 0;
   state.lastResult = roundRecord;
   render();
+
+  if (game.finished && confirm(copy(
+    "Game finished! A has been completed. Generate the recap image now?",
+    "比赛结束！已经成功打过 A。现在生成战报吗？"
+  ))) {
+    exportHistoryImage();
+  }
 }
 
 function renderSetupScreen() {
@@ -515,7 +541,6 @@ function renderSetupScreen() {
     <main class="page setup-page">
       <header class="topbar">
         <div>
-          <div class="eyebrow">${copy("Mobile PWA Prototype", "手机 PWA 原型")}</div>
           <h1>${copy("July Poker", "七月牌局")}</h1>
         </div>
         ${renderLanguageToggle()}
@@ -550,7 +575,7 @@ function renderSetupScreen() {
           <span>${copy(`${selectedCount} players`, `${selectedCount} 人`)}</span>
           <span>${selectedCount >= 5 && selectedCount % 2 === 1 ? copy(`${getRequiredPartnerCount(selectedCount)} partner(s) needed`, `需要 ${getRequiredPartnerCount(selectedCount)} 位朋友`) : copy("Select odd count ≥ 5", "至少 5 人，且为奇数")}</span>
         </div>
-        ${renderTablePreview(state.seatingOrder, { editable: false })}
+        ${renderTablePreview(state.seatingOrder)}
         ${renderSeatingControls()}
       </section>
 
@@ -568,7 +593,6 @@ function renderSetupScreen() {
 }
 
 function renderTablePreview(order, options = {}) {
-  const editable = options.editable;
   const radius = 42;
   const center = 50;
   return `
@@ -623,15 +647,19 @@ function renderGameScreen() {
   const selectedPartners = state.pending.partnerIds;
   const currentDealerLabel = dealerId ? getPlayerName(dealerId) : copy("Select after Round 1", "第一局后选择");
   const currentLevel = dealerId ? getDealerLevel() : "2";
+  const isFinished = Boolean(game.finished);
 
   return `
     <main class="page game-page">
       <header class="topbar game-topbar">
         <button class="icon-button" data-action="back-setup">‹</button>
-        <div>
-          <div class="eyebrow">${copy(`Round ${game.roundNumber} · ${game.deckCount} decks · ${takeoverScore} takeover`, `第 ${game.roundNumber} 局 · ${game.deckCount} 副牌 · ${takeoverScore} 上台`)}</div>
+        <div class="topbar-title">
+          <div class="eyebrow">${isFinished
+            ? copy(`Game Complete · ${game.deckCount} decks`, `比赛结束 · ${game.deckCount} 副牌`)
+            : copy(`Round ${game.roundNumber} · ${game.deckCount} decks · ${takeoverScore} takeover`, `第 ${game.roundNumber} 局 · ${game.deckCount} 副牌 · ${takeoverScore} 上台`)}</div>
           <h1>${dealerId ? escapeHtml(currentDealerLabel) : currentDealerLabel} <span class="level-pill">${copy(`Level ${currentLevel}`, `级牌 ${currentLevel}`)}</span></h1>
         </div>
+        ${renderLanguageToggle()}
       </header>
 
       <section class="action-bar">
@@ -646,6 +674,7 @@ function renderGameScreen() {
 
       ${state.lastResult ? renderLastResult() : ""}
 
+      ${isFinished ? renderGameFinishedPanel() : `
       <section class="panel input-panel">
         <h2>${copy("End Current Round", "结束本局")}</h2>
         ${!dealerId ? renderFirstDealerSelector() : ""}
@@ -666,6 +695,7 @@ function renderGameScreen() {
         <p class="hint">${copy("Each deck has up to 100 points. Scores should be entered in 5-point increments.", "每副牌最多 100 分。分数必须是 5 的倍数。")}</p>
         <button class="primary" data-action="submit-round">${copy("End Round and Calculate", "结束本局并计分")}</button>
       </section>
+      `}
 
       <section class="panel history-panel">
         <div class="panel-title-row">
@@ -675,6 +705,22 @@ function renderGameScreen() {
         ${game.history.length === 0 ? `<p class="muted">${copy("No rounds yet.", "还没有记录。")}</p>` : game.history.map(renderHistoryItem).join("")}
       </section>
     </main>
+  `;
+}
+
+function renderGameFinishedPanel() {
+  const finished = state.game.finished;
+  const winnerNames = finished.winnerIds.map(getPlayerNameHtml).join(" · ");
+  return `
+    <section class="panel finished-panel">
+      <div class="eyebrow">${copy("Final Result", "最终结果")}</div>
+      <h2>${copy("Game Complete", "比赛结束")}</h2>
+      <p>${copy(
+        `${winnerNames} completed A in Round ${finished.roundNumber}.`,
+        `${winnerNames} 在第 ${finished.roundNumber} 局成功打过 A。`
+      )}</p>
+      <button class="primary" data-action="export-history-image">${copy("Generate Recap", "生成战报")}</button>
+    </section>
   `;
 }
 
@@ -804,6 +850,14 @@ function buildHistoryAnalysis() {
     copy(`${mvp.name} played like the scorekeeper owed them rent: tidy, persistent, and mildly alarming.`, `${mvp.name} 打得像计分器欠 TA 房租：稳定、执着，还有点吓人。`),
     copy(`${mvp.name} turned small wins into a whole staircase. The table has requested a ladder inspection.`, `${mvp.name} 把小胜攒成楼梯，牌桌已经申请安全检查。`),
     copy(`${mvp.name} reached ${mvp.level}; everyone else has been advised to shuffle with more sincerity.`, `${mvp.name} 到了 ${mvp.level}，其他人被建议洗牌时更虔诚一点。`),
+    copy(`${mvp.name} treated the scoreboard like a personal calendar and scheduled steady progress all night.`, `${mvp.name} 把计分板当私人日程表，整晚都安排得明明白白。`),
+    copy(`${mvp.name} kept advancing with the quiet confidence of someone who already saw the ending credits.`, `${mvp.name} 一路升级，淡定得像早就看过结局彩蛋。`),
+    copy(`${mvp.name} did not sprint; they simply made everyone else look like they were walking through syrup.`, `${mvp.name} 没有冲刺，只是让别人看起来都像陷在糖浆里。`),
+    copy(`${mvp.name} climbed to ${mvp.level} and left the table doing some very private math.`, `${mvp.name} 打到 ${mvp.level}，留下全桌开始默默心算人生。`),
+    copy(`${mvp.name} made progress look casual, which is frankly the most annoying way to make progress.`, `${mvp.name} 把升级打得很随意，而随意地赢通常最气人。`),
+    copy(`${mvp.name} arrived at ${mvp.level} with excellent timing and a suspicious lack of apology.`, `${mvp.name} 抵达 ${mvp.level}，时机精准，而且完全没有要道歉的意思。`),
+    copy(`${mvp.name} collected levels like receipts and somehow made the whole thing look organized.`, `${mvp.name} 收级牌像收小票，还收得井井有条。`),
+    copy(`${mvp.name} gave the scoreboard a long-term plan, and unfortunately the plan worked.`, `${mvp.name} 给计分板制定了长期规划，更糟的是规划还成功了。`),
   ];
 
   return {
@@ -814,25 +868,27 @@ function buildHistoryAnalysis() {
     takeoverArtist,
     topChanges,
     joke: jokes[Math.abs(mvp.name.length + totalRounds + mvp.levelRank) % jokes.length],
-    leaderboard: stats.slice(0, 6),
+    leaderboard: stats,
   };
 }
 
 function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 4) {
   const source = String(text);
-  const words = source.includes(" ") ? source.split(" ") : [...source];
+  const tokens = source.match(/[A-Za-z0-9+#'’.-]+|[\s]+|./gu) || [];
   const lines = [];
   let line = "";
-  words.forEach((word) => {
-    const testLine = source.includes(" ") && line ? `${line} ${word}` : `${line}${word}`;
-    if (ctx.measureText(testLine).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
+
+  tokens.forEach((token) => {
+    const normalized = /^\s+$/.test(token) ? " " : token;
+    const testLine = `${line}${normalized}`;
+    if (ctx.measureText(testLine.trimEnd()).width > maxWidth && line.trim()) {
+      lines.push(line.trimEnd());
+      line = normalized.trimStart();
     } else {
       line = testLine;
     }
   });
-  if (line) lines.push(line);
+  if (line.trim()) lines.push(line.trimEnd());
 
   lines.slice(0, maxLines).forEach((textLine, index) => {
     const suffix = index === maxLines - 1 && lines.length > maxLines ? "..." : "";
@@ -856,18 +912,74 @@ function drawRoundRect(ctx, x, y, width, height, radius) {
 }
 
 function drawStatPill(ctx, label, value, x, y, width) {
-  drawRoundRect(ctx, x, y, width, 72, 18);
-  ctx.fillStyle = "rgba(255,255,255,0.10)";
+  drawRoundRect(ctx, x, y, width, 104, 20);
+  ctx.fillStyle = "rgba(255,255,255,0.11)";
   ctx.fill();
   ctx.fillStyle = "#a9c9bd";
-  ctx.font = "22px system-ui, sans-serif";
-  ctx.fillText(label, x + 20, y + 28);
+  ctx.font = "23px system-ui, sans-serif";
+  ctx.fillText(label, x + 20, y + 34);
   ctx.fillStyle = "#f6bf32";
-  ctx.font = "800 28px system-ui, sans-serif";
-  ctx.fillText(value, x + 20, y + 58);
+  ctx.font = "900 44px system-ui, sans-serif";
+  ctx.fillText(value, x + 20, y + 86);
 }
 
-function exportHistoryImage() {
+function pickRecapLine(lines, seed) {
+  return lines[Math.abs(seed) % lines.length];
+}
+
+function formatRecapDate() {
+  const date = new Date();
+  if (isZh()) {
+    return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+  return date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function getRecapFileName() {
+  return `${isZh() ? "zhaopengyou-zhanbao" : "poker-night-recap"}-${Date.now()}.png`;
+}
+
+function downloadCanvasImage(canvas, fileName) {
+  const link = document.createElement("a");
+  link.download = fileName;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+}
+
+function canvasToPngBlob(canvas) {
+  const dataUrl = canvas.toDataURL("image/png");
+  const binary = atob(dataUrl.split(",")[1]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: "image/png" });
+}
+
+async function shareOrDownloadCanvas(canvas) {
+  const fileName = getRecapFileName();
+  const blob = canvasToPngBlob(canvas);
+
+  if (blob && navigator.canShare && navigator.share) {
+    const file = new File([blob], fileName, { type: "image/png" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: copy("Poker Night Recap", "找朋友战报"),
+          text: copy("Poker night recap image", "找朋友牌局战报"),
+        });
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+      }
+    }
+  }
+
+  downloadCanvasImage(canvas, fileName);
+}
+
+async function exportHistoryImage() {
   const game = state.game;
   if (!game?.history?.length) {
     alert(copy("No history to export yet.", "还没有历史记录可以导出。"));
@@ -875,12 +987,13 @@ function exportHistoryImage() {
   }
 
   const analysis = buildHistoryAnalysis();
+  const recapDate = formatRecapDate();
   const canvas = document.createElement("canvas");
   canvas.width = 1080;
-  canvas.height = 1520;
+  canvas.height = 1920;
   const ctx = canvas.getContext("2d");
 
-  const gradient = ctx.createLinearGradient(0, 0, 1080, 1520);
+  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
   gradient.addColorStop(0, "#0b6046");
   gradient.addColorStop(0.55, "#04251d");
   gradient.addColorStop(1, "#01120e");
@@ -893,7 +1006,7 @@ function exportHistoryImage() {
   ctx.fill();
   ctx.fillStyle = "rgba(47,125,246,0.14)";
   ctx.beginPath();
-  ctx.arc(100, 1320, 240, 0, Math.PI * 2);
+  ctx.arc(100, 1710, 260, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.fillStyle = "#f4fff9";
@@ -902,11 +1015,11 @@ function exportHistoryImage() {
   ctx.fillStyle = "#a9c9bd";
   ctx.font = "26px system-ui, sans-serif";
   ctx.fillText(copy(
-    `${analysis.totalRounds} rounds · ${game.deckCount} decks · generated by Upgrade Poker Scorekeeper`,
-    `${analysis.totalRounds} 局 · ${game.deckCount} 副牌 · 找朋友计分器生成`
+    `${analysis.totalRounds} rounds · ${game.deckCount} decks · Match Recap · ${recapDate}`,
+    `${analysis.totalRounds} 局 · ${game.deckCount} 副牌 · 本场战报 · ${recapDate}`
   ), 74, 154);
 
-  drawRoundRect(ctx, 64, 210, 952, 292, 34);
+  drawRoundRect(ctx, 64, 208, 952, 340, 34);
   ctx.fillStyle = "rgba(255,255,255,0.09)";
   ctx.fill();
   ctx.strokeStyle = "rgba(246,191,50,0.42)";
@@ -915,74 +1028,138 @@ function exportHistoryImage() {
 
   ctx.fillStyle = "#f6bf32";
   ctx.font = "800 30px system-ui, sans-serif";
-  ctx.fillText(copy("Tonight's MVP", "今晚 MVP"), 104, 266);
+  ctx.fillText(copy("Tonight's MVP", "今晚 MVP"), 104, 268);
   ctx.fillStyle = "#ffffff";
-  ctx.font = "900 72px system-ui, sans-serif";
-  ctx.fillText(analysis.mvp.name, 104, 350);
+  ctx.font = "900 70px system-ui, sans-serif";
+  ctx.fillText(analysis.mvp.name, 104, 358, 820);
   ctx.fillStyle = "#d8ffe9";
-  ctx.font = "32px system-ui, sans-serif";
-  ctx.fillText(copy(`Current level: ${analysis.mvp.level} · Total climb: +${analysis.mvp.gains}`, `当前级牌：${analysis.mvp.level} · 总跳级：+${analysis.mvp.gains}`), 106, 402);
+  ctx.font = "31px system-ui, sans-serif";
+  ctx.fillText(copy(`Current level: ${analysis.mvp.level} · Total rounds: ${analysis.totalRounds}`, `当前级牌：${analysis.mvp.level} · 总局数：${analysis.totalRounds}`), 106, 418);
   ctx.fillStyle = "#f4fff9";
-  ctx.font = "28px system-ui, sans-serif";
-  wrapCanvasText(ctx, analysis.joke, 104, 452, 840, 38, 2);
+  ctx.font = "29px system-ui, sans-serif";
+  wrapCanvasText(ctx, analysis.joke, 104, 462, 850, 42, 2);
 
-  drawStatPill(ctx, copy("Dealer wins", "庄家胜场"), String(analysis.closer.dealerWins), 64, 536, 292);
-  drawStatPill(ctx, copy("Friend wins", "朋友助攻"), String(analysis.bestFriend.friendWins), 394, 536, 292);
-  drawStatPill(ctx, copy("Takeover heat", "上台热度"), String(analysis.takeoverArtist.takeoverWins), 724, 536, 292);
+  drawStatPill(ctx, copy("Dealer wins", "庄家胜场"), String(analysis.closer.dealerWins), 64, 590, 292);
+  drawStatPill(ctx, copy("Friend wins", "朋友助攻"), String(analysis.bestFriend.friendWins), 394, 590, 292);
+  drawStatPill(ctx, copy("Takeover heat", "上台热度"), String(analysis.takeoverArtist.takeoverWins), 724, 590, 292);
 
-  drawRoundRect(ctx, 64, 642, 952, 470, 30);
+  drawRoundRect(ctx, 64, 746, 952, 530, 30);
   ctx.fillStyle = "rgba(3, 31, 24, 0.74)";
   ctx.fill();
-  ctx.fillStyle = "#f4fff9";
-  ctx.font = "800 34px system-ui, sans-serif";
-  ctx.fillText(copy("Leaderboard", "排行榜"), 104, 704);
+  ctx.fillStyle = "#f6bf32";
+  ctx.font = "800 36px system-ui, sans-serif";
+  ctx.fillText(copy("Leaderboard", "排行榜"), 104, 808);
 
+  const rowStart = 866;
+  const rowHeight = Math.min(48, Math.max(35, 372 / Math.max(analysis.leaderboard.length, 1)));
+  const nameFontSize = rowHeight < 42 ? 22 : 29;
+  const detailFontSize = rowHeight < 42 ? 18 : 23;
   analysis.leaderboard.forEach((player, index) => {
-    const y = 760 + index * 54;
+    const y = rowStart + index * rowHeight;
     const avatar = getAvatar(player.playerId);
+    const rowTop = y - rowHeight + 14;
+    ctx.fillStyle = index % 2 === 0 ? "rgba(255,255,255,0.045)" : "rgba(255,255,255,0.018)";
+    drawRoundRect(ctx, 92, rowTop, 880, rowHeight - 6, 14);
+    ctx.fill();
+    if (index > 0) {
+      ctx.strokeStyle = "rgba(255,255,255,0.055)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(112, rowTop - 5);
+      ctx.lineTo(952, rowTop - 5);
+      ctx.stroke();
+    }
     ctx.fillStyle = avatar.bg;
     ctx.beginPath();
-    ctx.arc(122, y - 8, 20, 0, Math.PI * 2);
+    ctx.arc(122, y - 8, Math.min(20, rowHeight * 0.38), 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#f6bf32";
-    ctx.font = "800 24px system-ui, sans-serif";
+    ctx.fillStyle = ["#f6bf32", "#dce7e2", "#d59b5a"][index] || "#8fb9ab";
+    ctx.font = `800 ${detailFontSize}px system-ui, sans-serif`;
     ctx.fillText(`#${index + 1}`, 162, y);
     ctx.fillStyle = "#ffffff";
-    ctx.font = "800 30px system-ui, sans-serif";
-    ctx.fillText(player.name, 224, y);
+    ctx.font = `800 ${nameFontSize}px system-ui, sans-serif`;
+    ctx.fillText(player.name, 224, y, 230);
     ctx.fillStyle = "#a9c9bd";
-    ctx.font = "24px system-ui, sans-serif";
+    ctx.font = `${detailFontSize}px system-ui, sans-serif`;
     ctx.fillText(copy(
       `Level ${player.level} · +${player.gains} · dealer ${player.dealerWins} · friend ${player.friendWins}`,
       `级牌 ${player.level} · +${player.gains} · 庄家 ${player.dealerWins} · 朋友 ${player.friendWins}`
-    ), 500, y);
+    ), 500, y, 470);
   });
 
-  ctx.fillStyle = "#f4fff9";
-  ctx.font = "800 34px system-ui, sans-serif";
-  ctx.fillText(copy("Table Gossip", "牌桌小作文"), 104, 1158);
+  drawRoundRect(ctx, 64, 1308, 952, 430, 30);
+  ctx.fillStyle = "rgba(3, 31, 24, 0.60)";
+  ctx.fill();
+  ctx.fillStyle = "#f6bf32";
+  ctx.font = "800 36px system-ui, sans-serif";
+  ctx.fillText(copy("Table Gossip", "牌桌小作文"), 104, 1368);
   ctx.fillStyle = "#d8ffe9";
-  ctx.font = "27px system-ui, sans-serif";
-  let gossipY = 1210;
-  const gossip = [
+  ctx.font = "33px system-ui, sans-serif";
+  let gossipY = 1430;
+  const closerLines = [
     copy(`${analysis.closer.name} held the dealer seat like it came with a tiny throne.`, `${analysis.closer.name} 坐庄像坐小王座，稳得很有统治欲。`),
+    copy(`${analysis.closer.name} guarded the dealer seat with calm hands and very selective generosity.`, `${analysis.closer.name} 守庄守得手很稳，慷慨程度则相当挑人。`),
+    copy(`${analysis.closer.name} treated the dealer seat like reserved parking: available, but mostly for them.`, `${analysis.closer.name} 把庄位打成了专属车位：理论上大家都能坐，实际主要是 TA。`),
+    copy(`${analysis.closer.name} kept returning to the dealer seat with the confidence of someone who paid the deposit.`, `${analysis.closer.name} 反复回到庄位，气势像已经付过押金。`),
+    copy(`${analysis.closer.name} made the dealer seat look comfortable, which is usually how trouble starts.`, `${analysis.closer.name} 把庄位坐得很舒服，而麻烦通常就是这样开始的。`),
+    copy(`${analysis.closer.name} held court as dealer and somehow made it feel like official policy.`, `${analysis.closer.name} 坐庄坐出了开会气质，仿佛这是官方政策。`),
+    copy(`${analysis.closer.name} kept the dealer badge close and the table's optimism at a reasonable distance.`, `${analysis.closer.name} 把庄家标识握得很紧，也把全桌乐观情绪控制在合理距离。`),
+    copy(`${analysis.closer.name} turned dealer wins into a routine, which is rude behavior dressed as consistency.`, `${analysis.closer.name} 把坐庄胜利打成日常，稳定得有点没礼貌。`),
+  ];
+  const friendLines = [
     copy(`${analysis.bestFriend.name} was the friend every dealer wants: useful, suspiciously cheerful, and hard to blame.`, `${analysis.bestFriend.name} 是每个庄家都想要的朋友：好用、乐观，而且锅还甩不到 TA 身上。`),
+    copy(`${analysis.bestFriend.name} brought premium friend energy: helpful at the exact moment it became inconvenient for everyone else.`, `${analysis.bestFriend.name} 贡献了高级朋友能量：帮得刚刚好，也刚好让别人难受。`),
+    copy(`${analysis.bestFriend.name} showed up as a friend and immediately became a small operational problem for the other side.`, `${analysis.bestFriend.name} 一当朋友就变成对面的小型运营难题。`),
+    copy(`${analysis.bestFriend.name} made friendship look less emotional and more like a tactical asset.`, `${analysis.bestFriend.name} 把“朋友”打得不像感情关系，更像战术资产。`),
+    copy(`${analysis.bestFriend.name} provided friend support with the efficiency of a very polite conspiracy.`, `${analysis.bestFriend.name} 提供朋友支援的效率，像一场非常礼貌的合谋。`),
+    copy(`${analysis.bestFriend.name} kept appearing on the helpful side of history, which was convenient and suspicious.`, `${analysis.bestFriend.name} 总是站在“有帮助”的历史一边，方便，而且可疑。`),
+    copy(`${analysis.bestFriend.name} turned friend duty into a performance review and quietly passed with honors.`, `${analysis.bestFriend.name} 把朋友职责打成绩效考核，还悄悄拿了优秀。`),
+    copy(`${analysis.bestFriend.name} helped just enough to look generous and just too much to be forgiven.`, `${analysis.bestFriend.name} 帮得足够大方，也刚好大方到让人不太想原谅。`),
+  ];
+  const takeoverLines = [
+    copy(`${analysis.takeoverArtist.name} helped flip the table momentum ${analysis.takeoverArtist.takeoverWins} time(s). Politely terrifying.`, `${analysis.takeoverArtist.name} 帮对手翻盘 ${analysis.takeoverArtist.takeoverWins} 次，礼貌但可怕。`),
+    copy(`${analysis.takeoverArtist.name} treated takeover chances like open doors and walked through ${analysis.takeoverArtist.takeoverWins} of them.`, `${analysis.takeoverArtist.name} 看到上台机会就像看到门开了，直接走进去 ${analysis.takeoverArtist.takeoverWins} 次。`),
+    copy(`${analysis.takeoverArtist.name} changed the table temperature ${analysis.takeoverArtist.takeoverWins} time(s), which was rude but statistically impressive.`, `${analysis.takeoverArtist.name} 改变牌桌气温 ${analysis.takeoverArtist.takeoverWins} 次，不太礼貌，但数据很好看。`),
+    copy(`${analysis.takeoverArtist.name} specialized in momentum theft tonight: ${analysis.takeoverArtist.takeoverWins} clean takeover moment(s).`, `${analysis.takeoverArtist.name} 今晚专攻气势转移：漂亮上台 ${analysis.takeoverArtist.takeoverWins} 次。`),
+    copy(`${analysis.takeoverArtist.name} kept finding takeover windows and opening them with unnecessary confidence.`, `${analysis.takeoverArtist.name} 总能找到上台窗口，而且开窗时自信得有点多余。`),
+    copy(`${analysis.takeoverArtist.name} made ${analysis.takeoverArtist.takeoverWins} takeover moment(s) feel less like chance and more like paperwork.`, `${analysis.takeoverArtist.name} 把 ${analysis.takeoverArtist.takeoverWins} 次上台打得不像机会，更像流程审批。`),
+    copy(`${analysis.takeoverArtist.name} interrupted the dealer-side comfort ${analysis.takeoverArtist.takeoverWins} time(s), for balance and mild emotional damage.`, `${analysis.takeoverArtist.name} 打断庄家方舒适区 ${analysis.takeoverArtist.takeoverWins} 次，主打平衡和轻微心理冲击。`),
+    copy(`${analysis.takeoverArtist.name} brought takeover energy with the timing of someone arriving exactly when the room gets quiet.`, `${analysis.takeoverArtist.name} 带着上台能量精准出现，像房间刚安静 TA 就推门进来。`),
+  ];
+  const noTakeoverLines = [
+    copy("No major takeover storm tonight. The table remained emotionally insured.", "今晚没有大型上台风暴，牌桌情绪险暂时不用理赔。"),
+    copy("No serious takeover drama tonight; the scoreboard chose order over chaos.", "今晚没有严肃上台大戏，计分板选择了秩序而不是混乱。"),
+    copy("Takeover energy stayed politely low, which is either discipline or everyone being tired.", "上台能量礼貌偏低，可能是纪律，也可能是大家累了。"),
+    copy("The takeover department filed almost no paperwork tonight. Surprisingly peaceful.", "今晚“上台部门”几乎没交材料，意外和平。"),
+    copy("The table avoided a takeover spiral tonight. Very mature. Almost suspiciously mature.", "今晚牌桌避开了上台螺旋。很成熟，成熟得有点可疑。"),
+    copy("Takeover drama stayed in draft mode, never quite brave enough to publish.", "上台戏码一直停在草稿箱，始终没勇敢发布。"),
+    copy("No one really weaponized the takeover lane tonight, and the scoreboard looked relieved.", "今晚没人认真武器化上台路线，计分板看起来松了口气。"),
+    copy("The takeover plot remained quiet, possibly waiting for a sequel.", "上台剧情保持安静，可能是在等续集。"),
+  ];
+  const gossip = [
+    pickRecapLine(closerLines, analysis.closer.name.length + analysis.totalRounds + analysis.closer.dealerWins),
+    pickRecapLine(friendLines, analysis.bestFriend.name.length + analysis.bestFriend.friendWins + analysis.mvp.gains),
     analysis.takeoverArtist.takeoverWins
-      ? copy(`${analysis.takeoverArtist.name} helped flip the table momentum ${analysis.takeoverArtist.takeoverWins} time(s). Politely terrifying.`, `${analysis.takeoverArtist.name} 帮对手翻盘 ${analysis.takeoverArtist.takeoverWins} 次，礼貌但可怕。`)
-      : copy("No major takeover storm tonight. The table remained emotionally insured.", "今晚没有大型上台风暴，牌桌情绪险暂时不用理赔。"),
+      ? pickRecapLine(takeoverLines, analysis.takeoverArtist.name.length + analysis.takeoverArtist.takeoverWins + analysis.totalRounds)
+      : pickRecapLine(noTakeoverLines, analysis.totalRounds + analysis.mvp.levelRank),
   ];
   gossip.forEach((line) => {
-    gossipY = wrapCanvasText(ctx, line, 104, gossipY, 850, 36, 2) + 12;
+    ctx.fillStyle = "#f6bf32";
+    ctx.beginPath();
+    ctx.arc(114, gossipY - 11, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#d8ffe9";
+    gossipY = wrapCanvasText(ctx, line, 136, gossipY, 800, 40, 2) + 12;
   });
 
   ctx.fillStyle = "#a9c9bd";
   ctx.font = "22px system-ui, sans-serif";
-  ctx.fillText(copy("Share responsibly. Brag irresponsibly.", "理性分享，放肆炫耀。"), 104, 1450);
+  ctx.fillText(copy("Share responsibly. Brag irresponsibly.", "理性分享，放肆炫耀。"), 72, 1842);
+  ctx.textAlign = "right";
+  ctx.fillText(copy("July Poker · Upgrade Poker Scorekeeper", "七月牌局 · 找朋友计分器"), 1008, 1842);
+  ctx.textAlign = "left";
 
-  const link = document.createElement("a");
-  link.download = `${isZh() ? "zhaopengyou-zhanbao" : "poker-night-recap"}-${Date.now()}.png`;
-  link.href = canvas.toDataURL("image/png");
-  link.click();
+  await shareOrDownloadCanvas(canvas);
 }
 
 function renderRulesScreen() {
@@ -1055,8 +1232,8 @@ function bindEvents() {
       if (action === "export-history-image") exportHistoryImage();
       if (action === "set-first-dealer") { state.pending.firstDealerId = id; state.pending.partnerIds = state.pending.partnerIds.filter((p) => p !== id); render(); }
       if (action === "toggle-partner") togglePartner(id);
-      if (action === "score-minus") { state.pending.opponentScore = Math.max(0, Number(state.pending.opponentScore) - 5); render(); }
-      if (action === "score-plus") { state.pending.opponentScore = Math.min(getMaxScore(state.game.deckCount), Number(state.pending.opponentScore) + 5); render(); }
+      if (action === "score-minus") { updateOpponentScore(-5); }
+      if (action === "score-plus") { updateOpponentScore(5); }
       if (action === "submit-round") submitRound();
     });
   });
@@ -1069,9 +1246,20 @@ function bindEvents() {
 
   const scoreInput = document.querySelector("#score-input");
   if (scoreInput) {
-    scoreInput.addEventListener("input", (e) => state.pending.opponentScore = Number(e.target.value));
+    scoreInput.addEventListener("input", (e) => {
+      const value = Number(e.target.value);
+      state.pending.opponentScore = Number.isFinite(value) ? value : 0;
+    });
   }
 
+}
+
+function updateOpponentScore(delta) {
+  const current = Number(state.pending.opponentScore);
+  const base = Number.isFinite(current) ? current : 0;
+  const maxScore = getMaxScore(state.game.deckCount);
+  state.pending.opponentScore = Math.min(maxScore, Math.max(0, base + delta));
+  render();
 }
 
 function togglePartner(id) {
