@@ -46,6 +46,7 @@ const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"
 const REQUIRED_LEVELS = ["10", "K", "A"];
 const STORAGE_KEY = "upgrade-poker-scorekeeper-v3-rules-fix-v4-avatars";
 const OLD_STORAGE_KEY = "upgrade-poker-scorekeeper-v1";
+const MAX_SAVED_GAMES = 20;
 
 const state = loadState();
 
@@ -77,10 +78,12 @@ function createDefaultState() {
     pending: {
       firstDealerId: "",
       partnerIds: [],
+      activePartnerSlotIndex: 0,
       opponentScore: 0,
       newPlayerName: "",
     },
     lastResult: null,
+    savedGames: [],
   };
 }
 
@@ -114,6 +117,7 @@ function normalizeState(parsed) {
     ...incoming,
     game: normalizedGame,
     playerProfiles: mergedProfiles,
+    savedGames: Array.isArray(incoming.savedGames) ? incoming.savedGames : [],
     isPlayerSelectExpanded: incoming.isPlayerSelectExpanded ?? false,
     pending: { ...base.pending, ...(incoming.pending || {}) },
   };
@@ -152,8 +156,12 @@ function getPlayerProfile(id) {
   return state.playerProfiles.find((p) => p.id === id);
 }
 
+function getPlayerNameFromProfiles(id, profiles = state.playerProfiles) {
+  return profiles.find((p) => p.id === id)?.name;
+}
+
 function getPlayerName(id) {
-  return getPlayerProfile(id)?.name ?? copy("Unknown", "未知玩家");
+  return getPlayerNameFromProfiles(id) ?? copy("Unknown", "未知玩家");
 }
 
 function getPlayerNameHtml(id) {
@@ -183,11 +191,15 @@ function renderAvatar(id, size = "normal") {
 }
 
 function getRequiredPartnerCount(playerCount) {
-  return (playerCount - 3) / 2;
+  return Math.floor((playerCount - 2) / 2);
 }
 
 function getTakeoverScore(deckCount) {
-  return deckCount === 4 ? 180 : 120;
+  return deckCount * 40;
+}
+
+function getJumpInterval(deckCount) {
+  return getTakeoverScore(deckCount) / 2;
 }
 
 function getMaxScore(deckCount) {
@@ -217,10 +229,11 @@ function getDealerLevel() {
 }
 
 function createGame() {
-  if (state.seatingOrder.length < 5 || state.seatingOrder.length % 2 === 0) {
-    alert(copy("Please select an odd number of players, at least 5.", "请选择至少 5 位玩家，且人数必须为奇数。"));
+  if (state.seatingOrder.length < 5 || state.seatingOrder.length > 9) {
+    alert(copy("Please select 5 to 9 players.", "请选择 5 到 9 位玩家。"));
     return;
   }
+  const partnerCount = getRequiredPartnerCount(state.seatingOrder.length);
 
   state.game = {
     roundNumber: 1,
@@ -236,7 +249,7 @@ function createGame() {
     undoStack: [],
     finished: null,
   };
-  state.pending = { ...state.pending, firstDealerId: "", partnerIds: [], opponentScore: 0 };
+  state.pending = { ...state.pending, firstDealerId: "", partnerIds: Array(partnerCount).fill(""), activePartnerSlotIndex: 0, opponentScore: 0 };
   state.lastResult = null;
   state.screen = "game";
   render();
@@ -290,7 +303,7 @@ function resetGame() {
   ))) return;
   state.game = null;
   state.lastResult = null;
-  state.pending = { ...state.pending, firstDealerId: "", partnerIds: [], opponentScore: 0 };
+  state.pending = { ...state.pending, firstDealerId: "", partnerIds: [], activePartnerSlotIndex: 0, opponentScore: 0 };
   state.screen = "setup";
   render();
 }
@@ -312,6 +325,47 @@ function undoLastRound() {
   state.pending = { ...state.pending, ...(undoEntry.pending || {}), newPlayerName: state.pending.newPlayerName };
   state.lastResult = state.game.history[0] || null;
   render();
+}
+
+function uniqueIds(ids) {
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function getPartnerSlots(partnerIds, partnerCount) {
+  const slots = Array.isArray(partnerIds) ? [...partnerIds] : [];
+  while (slots.length < partnerCount) slots.push("");
+  return slots.slice(0, partnerCount);
+}
+
+function ensurePendingPartnerSlots() {
+  if (!state.game) return [];
+  const partnerCount = getRequiredPartnerCount(state.game.seatingOrder.length);
+  state.pending.partnerIds = getPartnerSlots(state.pending.partnerIds, partnerCount);
+  if (state.pending.activePartnerSlotIndex >= partnerCount) {
+    state.pending.activePartnerSlotIndex = Math.max(0, partnerCount - 1);
+  }
+  if (state.pending.activePartnerSlotIndex < 0) state.pending.activePartnerSlotIndex = 0;
+  return state.pending.partnerIds;
+}
+
+function getActualDealerSideIds(dealerId, partnerIds) {
+  return uniqueIds([dealerId, ...partnerIds]);
+}
+
+function getActualPartnerIds(dealerId, partnerIds) {
+  return uniqueIds(partnerIds).filter((id) => id !== dealerId);
+}
+
+function countPartnerSlotsByPlayer(partnerIds) {
+  return partnerIds.reduce((counts, id) => {
+    if (!id) return counts;
+    counts[id] = (counts[id] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function isSoloDealerRound(dealerId, partnerIds) {
+  return partnerIds.length > 0 && partnerIds.every((id) => id === dealerId);
 }
 
 function advanceLevel(currentLevel, steps, completedRequiredLevels) {
@@ -390,12 +444,18 @@ function getRoundType(round) {
 function formatRoundResult(round) {
   const type = getRoundType(round);
   if (type === "dealerWin") {
+    const solo = round.isSoloDealer;
     return copy(
-      "Dealer side wins. Dealer and partners advance. Dealer continues.",
-      "庄家方获胜。庄家和朋友升级，庄家继续坐庄。"
+      solo
+        ? "Dealer side wins solo. Dealer earns the solo bonus and continues."
+        : "Dealer side wins. Dealer and partners advance. Dealer continues.",
+      solo
+        ? "庄家单人坐庄获胜。庄家获得单人奖励并继续坐庄。"
+        : "庄家方获胜。庄家和朋友升级，庄家继续坐庄。"
     );
   }
-  const advanceSteps = round.resultAdvanceSteps ?? Math.floor((round.opponentScore - getTakeoverScore(state.game.deckCount)) / 60);
+  const deckCount = round.deckCount || state.game.deckCount;
+  const advanceSteps = round.resultAdvanceSteps ?? Math.floor((round.opponentScore - getTakeoverScore(deckCount)) / getJumpInterval(deckCount));
   const nextDealerName = getPlayerName(round.nextDealerId);
   return copy(
     `Opponent side takes over. All opponents advance +${advanceSteps}. ${nextDealerName} becomes dealer.`,
@@ -412,7 +472,7 @@ function submitRound() {
 
   const partnerCount = getRequiredPartnerCount(game.seatingOrder.length);
   const dealerId = game.currentDealerId || state.pending.firstDealerId;
-  const partnerIds = state.pending.partnerIds;
+  const partnerIds = getPartnerSlots(state.pending.partnerIds, partnerCount);
   const opponentScore = Number(state.pending.opponentScore);
   const maxScore = getMaxScore(game.deckCount);
 
@@ -420,12 +480,8 @@ function submitRound() {
     alert(copy("Please select the first dealer.", "请选择第一局庄家。"));
     return;
   }
-  if (partnerIds.length !== partnerCount) {
-    alert(copy(`Please select exactly ${partnerCount} partner(s).`, `请选择正好 ${partnerCount} 位朋友。`));
-    return;
-  }
-  if (partnerIds.includes(dealerId)) {
-    alert(copy("Dealer cannot be selected as a partner.", "庄家不能被选为朋友。"));
+  if (partnerIds.length !== partnerCount || partnerIds.some((id) => !id)) {
+    alert(copy(`Please fill all ${partnerCount} partner slot(s).`, `请填满 ${partnerCount} 个朋友名额。`));
     return;
   }
   if (!Number.isFinite(opponentScore) || opponentScore < 0 || opponentScore % 5 !== 0) {
@@ -446,8 +502,11 @@ function submitRound() {
   if (!game.currentDealerId) game.currentDealerId = dealerId;
 
   const takeoverScore = getTakeoverScore(game.deckCount);
+  const jumpInterval = getJumpInterval(game.deckCount);
   const dealerLevel = getDealerLevel();
-  const dealerSideIds = [dealerId, ...partnerIds];
+  const dealerSideIds = getActualDealerSideIds(dealerId, partnerIds);
+  const actualPartnerIds = getActualPartnerIds(dealerId, partnerIds);
+  const soloDealer = isSoloDealerRound(dealerId, partnerIds);
   const levelChanges = [];
   let nextDealerId = dealerId;
   let resultText = "";
@@ -458,7 +517,7 @@ function submitRound() {
   let finishedWinnerIds = [];
 
   if (opponentScore >= takeoverScore) {
-    const advanceSteps = Math.floor((opponentScore - takeoverScore) / 60);
+    const advanceSteps = Math.floor((opponentScore - takeoverScore) / jumpInterval);
     resultAdvanceSteps = advanceSteps;
     resultType = "takeover";
     nextDealerId = findNextDealer(dealerId, dealerSideIds);
@@ -475,8 +534,8 @@ function submitRound() {
     resultText = formatRoundResult({ resultType, resultAdvanceSteps, nextDealerId });
   } else {
     resultType = "dealerWin";
-    const dealerSteps = opponentScore === 0 ? 4 : opponentScore < 60 ? 3 : 2;
-    const partnerSteps = opponentScore === 0 ? 3 : opponentScore < 60 ? 2 : 1;
+    const partnerSteps = opponentScore === 0 ? 3 : opponentScore < jumpInterval ? 2 : 1;
+    const dealerSteps = partnerSteps + (soloDealer ? 2 : 1);
 
     // Correct rule: dealer side advances together; the dealer receives one
     // extra level compared with partners. If the dealer side wins on 10 / K / A,
@@ -486,7 +545,7 @@ function submitRound() {
       finishedWinnerIds = [...dealerSideIds];
     }
 
-    dealerSideIds.forEach((id) => {
+    [dealerId, ...actualPartnerIds].forEach((id) => {
       const player = getPlayerState(id);
       const steps = id === dealerId ? dealerSteps : partnerSteps;
       const before = player.level;
@@ -502,7 +561,11 @@ function submitRound() {
     roundNumber: game.roundNumber,
     dealerId,
     dealerLevel,
+    deckCount: game.deckCount,
     partnerIds: [...partnerIds],
+    dealerSideIds: [...dealerSideIds],
+    opponentSideIds: [...opponentSideIds],
+    isSoloDealer: soloDealer,
     opponentScore,
     resultType,
     resultAdvanceSteps,
@@ -518,7 +581,8 @@ function submitRound() {
   if (finishedWinnerIds.length) {
     game.finished = createGameFinishedState(roundRecord, finishedWinnerIds);
   }
-  state.pending.partnerIds = [];
+  state.pending.partnerIds = Array(partnerCount).fill("");
+  state.pending.activePartnerSlotIndex = 0;
   state.pending.firstDealerId = "";
   state.pending.opponentScore = 0;
   state.lastResult = roundRecord;
@@ -544,6 +608,7 @@ function renderSetupScreen() {
           <h1>${copy("July Poker", "七月牌局")}</h1>
         </div>
         ${renderLanguageToggle()}
+        <button class="utility-button" data-action="save-game" ${state.game ? "" : "disabled"}>${copy("Save", "保存")}</button>
         <button class="utility-button" data-action="open-rules">${copy("Rules", "规则")}</button>
       </header>
 
@@ -573,7 +638,7 @@ function renderSetupScreen() {
         <h2>${copy("Seating Preview", "牌桌预览")}</h2>
         <div class="meta-row">
           <span>${copy(`${selectedCount} players`, `${selectedCount} 人`)}</span>
-          <span>${selectedCount >= 5 && selectedCount % 2 === 1 ? copy(`${getRequiredPartnerCount(selectedCount)} partner(s) needed`, `需要 ${getRequiredPartnerCount(selectedCount)} 位朋友`) : copy("Select odd count ≥ 5", "至少 5 人，且为奇数")}</span>
+          <span>${selectedCount >= 5 && selectedCount <= 9 ? copy(`${getRequiredPartnerCount(selectedCount)} partner slot(s)`, `${getRequiredPartnerCount(selectedCount)} 个朋友名额`) : copy("Select 5-9 players", "请选择 5-9 人")}</span>
         </div>
         ${renderTablePreview(state.seatingOrder)}
         ${renderSeatingControls()}
@@ -583,9 +648,11 @@ function renderSetupScreen() {
         <h2>${copy("Deck Count", "牌副数")}</h2>
         <div class="segmented">
           <button class="${state.deckCount === 3 ? "active" : ""}" data-action="set-decks" data-value="3">${copy("3 Decks · 120 Takeover", "3 副牌 · 120 上台")}</button>
-          <button class="${state.deckCount === 4 ? "active" : ""}" data-action="set-decks" data-value="4">${copy("4 Decks · 180 Takeover", "4 副牌 · 180 上台")}</button>
+          <button class="${state.deckCount === 4 ? "active" : ""}" data-action="set-decks" data-value="4">${copy("4 Decks · 160 Takeover", "4 副牌 · 160 上台")}</button>
         </div>
       </section>
+
+      ${renderSavedGamesPanel()}
 
       <button class="primary sticky" data-action="start-game">${copy("Start Game", "开始牌局")}</button>
     </main>
@@ -640,11 +707,11 @@ function renderSeatingControls() {
 
 function renderGameScreen() {
   const game = state.game;
+  ensurePendingPartnerSlots();
   const dealerId = game.currentDealerId;
   const partnerCount = getRequiredPartnerCount(game.seatingOrder.length);
   const takeoverScore = getTakeoverScore(game.deckCount);
   const maxScore = getMaxScore(game.deckCount);
-  const selectedPartners = state.pending.partnerIds;
   const currentDealerLabel = dealerId ? getPlayerName(dealerId) : copy("Select after Round 1", "第一局后选择");
   const currentLevel = dealerId ? getDealerLevel() : "2";
   const isFinished = Boolean(game.finished);
@@ -664,6 +731,7 @@ function renderGameScreen() {
 
       <section class="action-bar">
         <button class="secondary" data-action="undo-round" ${game.undoStack?.length ? "" : "disabled"}>${copy("Undo Last Round", "撤销上一局")}</button>
+        <button class="secondary" data-action="save-game">${copy("Save Game", "保存牌局")}</button>
         <button class="secondary danger" data-action="reset-game">${copy("Reset Game", "重置牌局")}</button>
         <button class="secondary" data-action="open-rules">${copy("Rules", "规则")}</button>
       </section>
@@ -678,13 +746,7 @@ function renderGameScreen() {
       <section class="panel input-panel">
         <h2>${copy("End Current Round", "结束本局")}</h2>
         ${!dealerId ? renderFirstDealerSelector() : ""}
-        <label class="field-label">${copy(`Dealer Partners · select ${partnerCount}`, `庄家的朋友 · 选择 ${partnerCount} 位`)}</label>
-        <div class="player-grid small">
-          ${game.seatingOrder.map((id) => {
-            const disabled = (dealerId || state.pending.firstDealerId) === id;
-            return `<button class="chip avatar-chip ${selectedPartners.includes(id) ? "selected blue" : ""}" ${disabled ? "disabled" : ""} data-action="toggle-partner" data-id="${id}">${renderAvatar(id, "tiny")}<span>${getPlayerNameHtml(id)}</span></button>`;
-          }).join("")}
-        </div>
+        ${renderPartnerSlotPicker()}
 
         <label class="field-label">${copy(`Opponent Score · 0-${maxScore}`, `对手分 · 0-${maxScore}`)}</label>
         <div class="score-stepper numeric-only">
@@ -704,6 +766,7 @@ function renderGameScreen() {
         </div>
         ${game.history.length === 0 ? `<p class="muted">${copy("No rounds yet.", "还没有记录。")}</p>` : game.history.map(renderHistoryItem).join("")}
       </section>
+      ${renderSavedGamesPanel()}
     </main>
   `;
 }
@@ -728,6 +791,7 @@ function renderGameTable() {
   const game = state.game;
   const dealerId = game.currentDealerId || state.pending.firstDealerId;
   const partnerIds = state.pending.partnerIds;
+  const partnerCounts = countPartnerSlotsByPlayer(partnerIds);
   const radius = 42;
   const center = 50;
   return `
@@ -740,13 +804,19 @@ function renderGameTable() {
           const y = center + radius * Math.sin(rad);
           const player = getPlayerState(id);
           const isDealer = id === dealerId;
-          const isPartner = partnerIds.includes(id);
+          const partnerSlotCount = partnerCounts[id] || 0;
+          const isPartner = partnerSlotCount > 0;
+          const badge = isDealer
+            ? partnerSlotCount ? copy(`D+F×${partnerSlotCount}`, `庄+友×${partnerSlotCount}`) : copy("D", "庄")
+            : isPartner
+              ? partnerSlotCount > 1 ? copy(`F×${partnerSlotCount}`, `友×${partnerSlotCount}`) : copy("F", "友")
+              : "";
           return `
             <div class="avatar-seat live-seat ${isDealer ? "dealer" : ""} ${isPartner ? "partner" : ""}" style="left:${x}%;top:${y}%">
               ${renderAvatar(id)}
               <span class="avatar-name">${getPlayerNameHtml(id)}</span>
               <strong>${player.level}</strong>
-              ${isDealer ? `<em>庄</em>` : isPartner ? `<em>友</em>` : ""}
+              ${badge ? `<em>${badge}</em>` : ""}
             </div>
           `;
         }).join("")}
@@ -766,6 +836,39 @@ function renderFirstDealerSelector() {
   `;
 }
 
+function renderPartnerSlotPicker() {
+  const game = state.game;
+  const partnerCount = getRequiredPartnerCount(game.seatingOrder.length);
+  const dealerId = game.currentDealerId || state.pending.firstDealerId;
+  const partnerIds = getPartnerSlots(state.pending.partnerIds, partnerCount);
+  const activeIndex = Math.min(state.pending.activePartnerSlotIndex || 0, Math.max(0, partnerCount - 1));
+  const counts = countPartnerSlotsByPlayer(partnerIds);
+  const soloDealer = dealerId && isSoloDealerRound(dealerId, partnerIds);
+
+  return `
+    <label class="field-label">${copy(`Dealer friend slots · ${partnerCount}`, `庄家的朋友名额 · ${partnerCount}`)}</label>
+    <div class="partner-slots">
+      ${partnerIds.map((id, index) => `
+        <button class="partner-slot ${activeIndex === index ? "active" : ""} ${id ? "filled" : ""}" data-action="select-partner-slot" data-index="${index}">
+          <span>${copy(`Friend ${index + 1}`, `朋友 ${index + 1}`)}</span>
+          <strong>${id ? `${getPlayerNameHtml(id)}${id === dealerId ? copy(" (dealer)", "（庄家）") : ""}` : copy("Select", "未选择")}</strong>
+          ${id ? `<i data-action="clear-partner-slot" data-index="${index}">×</i>` : ""}
+        </button>
+      `).join("")}
+    </div>
+    ${soloDealer ? `<p class="hint solo-hint">${copy("Solo dealer: dealer gets one extra level on top of the normal dealer bonus if the dealer side wins.", "单人坐庄：庄家方获胜时，庄家在普通庄家奖励基础上额外 +1 级。")}</p>` : ""}
+    <label class="field-label">${copy("Choose a player for the active slot", "为当前名额选择玩家")}</label>
+    <div class="player-grid small">
+      ${game.seatingOrder.map((id) => {
+        const count = counts[id] || 0;
+        const marker = id === dealerId ? copy(" D", " 庄") : "";
+        const countText = count ? ` ×${count}` : "";
+        return `<button class="chip avatar-chip ${count ? "selected blue" : ""}" data-action="set-partner-slot" data-id="${id}">${renderAvatar(id, "tiny")}<span>${getPlayerNameHtml(id)}${marker}${countText}</span></button>`;
+      }).join("")}
+    </div>
+  `;
+}
+
 function renderLastResult() {
   const r = state.lastResult;
   return `
@@ -778,14 +881,122 @@ function renderLastResult() {
 }
 
 function renderHistoryItem(item) {
+  const partnerIds = Array.isArray(item.partnerIds) ? item.partnerIds : [];
+  const dealerSideIds = item.dealerSideIds || getActualDealerSideIds(item.dealerId, partnerIds);
   return `
     <details class="history-item">
       <summary>${copy(`Round ${item.roundNumber}: ${getPlayerNameHtml(item.dealerId)} · Score ${item.opponentScore}`, `第 ${item.roundNumber} 局：${getPlayerNameHtml(item.dealerId)} · 对手分 ${item.opponentScore}`)}</summary>
       <p>${copy("Dealer level:", "庄家级牌：")} ${item.dealerLevel}</p>
-      <p>${copy("Partners:", "朋友：")} ${item.partnerIds.map(getPlayerNameHtml).join(", ")}</p>
+      <p>${copy("Friend slots:", "朋友名额：")} ${partnerIds.map(getPlayerNameHtml).join(", ")}</p>
+      <p>${copy("Actual dealer side:", "实际庄家方：")} ${dealerSideIds.map(getPlayerNameHtml).join(", ")}</p>
       <p>${escapeHtml(formatRoundResult(item))}</p>
       <p>${item.levelChanges.map((c) => `${getPlayerNameHtml(c.playerId)} ${c.before} → ${c.after}`).join(" · ") || copy("No level change", "无人升级")}</p>
     </details>
+  `;
+}
+
+function formatSaveTime(timestamp) {
+  return new Date(timestamp).toLocaleString(isZh() ? "zh-CN" : "en-US", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function createSaveSnapshot() {
+  return JSON.parse(JSON.stringify({
+    playerProfiles: state.playerProfiles,
+    selectedPlayerIds: state.selectedPlayerIds,
+    seatingOrder: state.seatingOrder,
+    deckCount: state.deckCount,
+    game: state.game,
+    pending: { ...state.pending, returnScreen: "" },
+    lastResult: state.lastResult,
+  }));
+}
+
+function getSaveTitle(snapshot) {
+  const game = snapshot.game;
+  if (!game) return copy("No active game", "无进行中牌局");
+  return copy(
+    `${game.seatingOrder.length} players · ${game.deckCount} decks · Round ${game.roundNumber}`,
+    `${game.seatingOrder.length} 人 · ${game.deckCount} 副牌 · 第 ${game.roundNumber} 局`
+  );
+}
+
+function saveCurrentGame() {
+  if (!state.game) {
+    alert(copy("No active game to save.", "当前没有可保存的牌局。"));
+    return;
+  }
+  const now = Date.now();
+  const snapshot = createSaveSnapshot();
+  const save = {
+    id: `save-${now}`,
+    title: getSaveTitle(snapshot),
+    createdAt: now,
+    updatedAt: now,
+    snapshot,
+  };
+  state.savedGames = [save, ...(state.savedGames || [])].slice(0, MAX_SAVED_GAMES);
+  saveState();
+  alert(copy("Game saved on this device.", "牌局已保存到本设备。"));
+  render();
+}
+
+function restoreSavedGame(saveId) {
+  const save = (state.savedGames || []).find((item) => item.id === saveId);
+  if (!save) return;
+  if (state.game && !confirm(copy(
+    "Restore this save? The current game will be replaced. Save it first if you need it.",
+    "恢复这个存档？当前牌局会被替换。如需保留，请先保存当前牌局。"
+  ))) return;
+  const snapshot = JSON.parse(JSON.stringify(save.snapshot));
+  state.playerProfiles = snapshot.playerProfiles || state.playerProfiles;
+  state.selectedPlayerIds = snapshot.selectedPlayerIds || [];
+  state.seatingOrder = snapshot.seatingOrder || [];
+  state.deckCount = snapshot.deckCount || 3;
+  state.game = snapshot.game || null;
+  state.pending = { ...createDefaultState().pending, ...(snapshot.pending || {}) };
+  state.lastResult = snapshot.lastResult || state.game?.history?.[0] || null;
+  state.screen = state.game ? "game" : "setup";
+  render();
+}
+
+function deleteSavedGame(saveId) {
+  if (!confirm(copy("Delete this saved game?", "删除这个牌局存档？"))) return;
+  state.savedGames = (state.savedGames || []).filter((item) => item.id !== saveId);
+  render();
+}
+
+function renderSavedGamesPanel() {
+  const saves = state.savedGames || [];
+  return `
+    <section class="panel saves-panel">
+      <div class="panel-title-row">
+        <h2>${copy("Saved Games", "牌局存档")}</h2>
+        <button class="secondary small-action" data-action="save-game" ${state.game ? "" : "disabled"}>${copy("Save Current", "保存当前")}</button>
+      </div>
+      <p class="hint">${copy("Saved games stay in this device's browser storage.", "存档保存在当前设备的浏览器本地数据中。")}</p>
+      ${saves.length ? saves.map((save) => {
+        const game = save.snapshot?.game;
+        const dealerId = game?.currentDealerId;
+        const dealerName = dealerId ? getPlayerNameFromProfiles(dealerId, save.snapshot?.playerProfiles || []) : "";
+        return `
+          <div class="save-item">
+            <div>
+              <strong>${escapeHtml(save.title)}</strong>
+              <p>${copy("Saved", "保存于")} ${formatSaveTime(save.updatedAt || save.createdAt)}${dealerName ? ` · ${copy("Dealer", "庄家")} ${escapeHtml(dealerName)}` : ""}</p>
+            </div>
+            <div class="save-actions">
+              <button class="mini-button" data-action="restore-save" data-id="${save.id}">↩</button>
+              <button class="mini-button danger" data-action="delete-save" data-id="${save.id}">×</button>
+            </div>
+          </div>
+        `;
+      }).join("") : `<p class="muted">${copy("No saved games yet.", "还没有牌局存档。")}</p>`}
+    </section>
   `;
 }
 
@@ -812,15 +1023,18 @@ function buildHistoryAnalysis() {
   game.history.forEach((round) => {
     const dealerStat = byId.get(round.dealerId);
     const dealerSideWon = getRoundType(round) === "dealerWin";
+    const partnerIds = Array.isArray(round.partnerIds) ? round.partnerIds : [];
+    const actualPartnerIds = getActualPartnerIds(round.dealerId, partnerIds);
+    const dealerSideIds = round.dealerSideIds || getActualDealerSideIds(round.dealerId, partnerIds);
     if (dealerSideWon && dealerStat) dealerStat.dealerWins += 1;
     if (dealerSideWon) {
-      round.partnerIds.forEach((id) => {
+      actualPartnerIds.forEach((id) => {
         const partnerStat = byId.get(id);
         if (partnerStat) partnerStat.friendWins += 1;
       });
     } else {
       game.seatingOrder.forEach((id) => {
-        if (id === round.dealerId || round.partnerIds.includes(id)) return;
+        if (dealerSideIds.includes(id)) return;
         const opponentStat = byId.get(id);
         if (opponentStat) opponentStat.takeoverWins += 1;
       });
@@ -831,7 +1045,7 @@ function buildHistoryAnalysis() {
       playerStat.gains += Math.max(0, getLevelRank(change.after) - getLevelRank(change.before));
     });
     game.seatingOrder.forEach((id) => {
-      if (id === round.dealerId || round.partnerIds.includes(id)) return;
+      if (dealerSideIds.includes(id)) return;
       const opponentStat = byId.get(id);
       if (opponentStat) opponentStat.opponentPoints += round.opponentScore;
     });
@@ -1197,7 +1411,15 @@ function renderRulesScreen() {
       <section class="panel">
         <h2>${copy("Score Limits", "分数范围")}</h2>
         <p class="rule-line">${copy(`${activeDeckCount} decks · maximum opponent score ${getMaxScore(activeDeckCount)}`, `${activeDeckCount} 副牌 · 对手最高分 ${getMaxScore(activeDeckCount)}`)}</p>
+        <p class="rule-line">${copy(`Takeover score is ${getTakeoverScore(activeDeckCount)}; jump interval is ${getJumpInterval(activeDeckCount)}.`, `上台分为 ${getTakeoverScore(activeDeckCount)}；跳级间隔为 ${getJumpInterval(activeDeckCount)}。`)}</p>
         <p class="rule-line">${copy("Each deck has up to 100 points. Scores must be entered in 5-point increments.", "每副牌最多 100 分。分数必须是 5 的倍数。")}</p>
+      </section>
+
+      <section class="panel">
+        <h2>${copy("Friend Slots", "朋友名额")}</h2>
+        <p class="rule-line">${copy("Games support 5 to 9 players. Friend slots are fixed by player count, and the same player may fill multiple slots.", "牌局支持 5 到 9 人。朋友名额按人数固定，同一名玩家可以占多个朋友名额。")}</p>
+        <p class="rule-line">${copy("The dealer may fill friend slots with themselves. If every slot is the dealer, the dealer plays solo and gets one extra level on a dealer-side win.", "庄家可以找自己。如果所有朋友名额都是庄家本人，则视为单人坐庄；庄家方获胜时，庄家额外 +1 级。")}</p>
+        <p class="rule-line">${copy("A repeated friend only advances once when the dealer side wins.", "同一个朋友被找多次时，庄家方获胜也只升级一次。")}</p>
       </section>
 
       <section class="panel">
@@ -1225,6 +1447,7 @@ function renderRulesScreen() {
 function bindEvents() {
   document.querySelectorAll("[data-action]").forEach((el) => {
     el.addEventListener("click", (event) => {
+      event.stopPropagation();
       const target = event.currentTarget;
       const action = target.dataset.action;
       const id = target.dataset.id;
@@ -1248,9 +1471,14 @@ function bindEvents() {
       if (action === "close-rules") { state.screen = state.pending.returnScreen || "setup"; state.pending.returnScreen = ""; render(); }
       if (action === "undo-round") undoLastRound();
       if (action === "reset-game") resetGame();
+      if (action === "save-game") saveCurrentGame();
+      if (action === "restore-save") restoreSavedGame(id);
+      if (action === "delete-save") deleteSavedGame(id);
       if (action === "export-history-image") exportHistoryImage();
-      if (action === "set-first-dealer") { state.pending.firstDealerId = id; state.pending.partnerIds = state.pending.partnerIds.filter((p) => p !== id); render(); }
-      if (action === "toggle-partner") togglePartner(id);
+      if (action === "set-first-dealer") { state.pending.firstDealerId = id; render(); }
+      if (action === "select-partner-slot") selectPartnerSlot(index);
+      if (action === "clear-partner-slot") clearPartnerSlot(index);
+      if (action === "set-partner-slot") setPartnerSlot(id);
       if (action === "score-minus") { updateOpponentScore(-5); }
       if (action === "score-plus") { updateOpponentScore(5); }
       if (action === "submit-round") submitRound();
@@ -1281,18 +1509,28 @@ function updateOpponentScore(delta) {
   render();
 }
 
-function togglePartner(id) {
-  const dealerId = state.game.currentDealerId || state.pending.firstDealerId;
-  if (id === dealerId) return;
-  const partnerCount = getRequiredPartnerCount(state.game.seatingOrder.length);
-  const selected = state.pending.partnerIds.includes(id);
-  if (selected) {
-    state.pending.partnerIds = state.pending.partnerIds.filter((p) => p !== id);
-  } else if (state.pending.partnerIds.length < partnerCount) {
-    state.pending.partnerIds.push(id);
-  } else {
-    alert(copy(`Only ${partnerCount} partner(s) are allowed.`, `最多只能选择 ${partnerCount} 位朋友。`));
-  }
+function selectPartnerSlot(index) {
+  ensurePendingPartnerSlots();
+  if (index < 0 || index >= state.pending.partnerIds.length) return;
+  state.pending.activePartnerSlotIndex = index;
+  render();
+}
+
+function clearPartnerSlot(index) {
+  ensurePendingPartnerSlots();
+  if (index < 0 || index >= state.pending.partnerIds.length) return;
+  state.pending.partnerIds[index] = "";
+  state.pending.activePartnerSlotIndex = index;
+  render();
+}
+
+function setPartnerSlot(id) {
+  ensurePendingPartnerSlots();
+  if (!state.pending.partnerIds.length) return;
+  const index = Math.min(state.pending.activePartnerSlotIndex || 0, state.pending.partnerIds.length - 1);
+  state.pending.partnerIds[index] = id;
+  const nextEmpty = state.pending.partnerIds.findIndex((slotId) => !slotId);
+  state.pending.activePartnerSlotIndex = nextEmpty >= 0 ? nextEmpty : index;
   render();
 }
 
